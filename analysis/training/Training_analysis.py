@@ -120,9 +120,13 @@ warnings.filterwarnings('ignore')
 # Tracks Available:
 
 # +
-model_logs_root = 'logs/sample-console-logs'
-log = DeepRacerLog(model_logs_root)
-
+import os 
+dir_path = os.path.dirname(os.path.realpath(os.path.abspath('')))
+model_logs_root = dir_path + '/training/logs/experiment-3'
+print(model_logs_root)
+log = DeepRacerLog(model_folder = model_logs_root)
+print(log)
+ 
 # load logs into a dataframe
 log.load()
 
