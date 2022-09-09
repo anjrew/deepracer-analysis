@@ -110,7 +110,7 @@ warnings.filterwarnings('ignore')
 #     
 
 # +
-model_logs_root = 'logs/sample-console-logs'
+model_logs_root = '/home/aj/deepracer-for-cloud/data/minio/bucket/rl-deepracer-sagemaker'
 log = DeepRacerLog(model_logs_root)
 
 # load logs into a dataframe
