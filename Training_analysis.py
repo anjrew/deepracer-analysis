@@ -110,8 +110,13 @@ warnings.filterwarnings('ignore')
 #     
 
 # +
-model_logs_root = '/home/aj/deepracer-for-cloud/data/minio/bucket/rl-deepracer-sagemaker'
-log = DeepRacerLog(model_logs_root)
+from deepracer.logs import (AnalysisUtils, DeepRacerLog, S3FileHandler)
+
+fh = S3FileHandler(bucket="bucket", prefix="rl-deepracer-sagemaker",
+                   profile="minio", s3_endpoint_url="http://192.168.78.118:9000")
+log = DeepRacerLog(filehandler=fh)
+# drl.load_training_trace()
+
 
 # load logs into a dataframe
 log.load()
@@ -124,7 +129,6 @@ try:
     pprint(log.action_space())
 except Exception:
     print("Robomaker logs not available")
-
 df = log.dataframe()
 # -
 
