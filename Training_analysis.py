@@ -112,24 +112,31 @@ warnings.filterwarnings('ignore')
 # +
 from deepracer.logs import (AnalysisUtils, DeepRacerLog, S3FileHandler)
 
+# fh = S3FileHandler(bucket="<my_bucket>", prefix="<my_prefix>",
+#                    profile="<awscli_profile>", s3_endpoint_url="<minio_url>")
+
 fh = S3FileHandler(bucket="bucket", prefix="rl-deepracer-sagemaker",
                    profile="minio", s3_endpoint_url="http://192.168.78.118:9000")
 log = DeepRacerLog(filehandler=fh)
-# drl.load_training_trace()
 
 
 # load logs into a dataframe
 log.load()
 
 try:
+    print("AGENT AND NETWORK")
     pprint(log.agent_and_network())
     print("-------------")
+    print("HYPERPARAMETERS")
     pprint(log.hyperparameters())
     print("-------------")
+    print("ACTION SPACE")
     pprint(log.action_space())
 except Exception:
     print("Robomaker logs not available")
 df = log.dataframe()
+
+simulation_agg = AnalysisUtils.simulation_agg(df)
 # -
 
 # If the code above worked, you will see a list of details printed above: a bit about the agent and the network, a bit about the hyperparameters and some information about the action space. Now let's see what got loaded into the dataframe - the data structure holding your simulation information. the `head()` method prints out a few first lines of the data:
