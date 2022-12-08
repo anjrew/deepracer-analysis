@@ -59,6 +59,8 @@
 #
 # If you are using an AWS SageMaker Notebook to run the log analysis, you will need to ensure you install required dependencies. To do that uncomment and run the following:
 
+# !pwd
+
 # +
 # Make sure you have deepracer-utils >= 0.9
 
@@ -109,39 +111,104 @@ warnings.filterwarnings('ignore')
 # This notebook has been updated to support the most recent setups. Most of the mentioned projects above are no longer compatible with AWS DeepRacer Console anyway so do consider moving to the ones actively maintained.
 #     
 
+import pandas as pd
+from deepracer.logs import \
+    SimulationLogsIO as slio, \
+    NewRewardUtils as nr, \
+    AnalysisUtils as au, \
+    PlottingUtils as pu, \
+    ActionBreakdownUtils as abu, \
+    DeepRacerLog
+
+
 # +
 from deepracer.logs import (AnalysisUtils, DeepRacerLog, S3FileHandler)
 
-# fh = S3FileHandler(bucket="<my_bucket>", prefix="<my_prefix>",
-#                    profile="<awscli_profile>", s3_endpoint_url="<minio_url>")
+BUCKET="bucket"
+PREFIX="rl-deepracer-101"
+# WARNING the IP Address for the 's3_endpoint_url' is the IP adress of the MinIO container. THIS CAN BE THE IP WITHIN A DOCKER NETWORK
+fh = S3FileHandler(bucket=BUCKET, prefix=PREFIX,
+                   profile="minio", s3_endpoint_url="http://minio:9000")
 
-fh = S3FileHandler(bucket="bucket", prefix="rl-deepracer-sagemaker",
-                   profile="minio", s3_endpoint_url="http://192.168.78.118:9000")
 log = DeepRacerLog(filehandler=fh)
 
+# -
 
 # load logs into a dataframe
 log.load()
 
+
+# +
+hyperparameters = None
 try:
     print("AGENT AND NETWORK")
     pprint(log.agent_and_network())
+except Exception:
+        print("Robomaker logs not available")
+try:
     print("-------------")
     print("HYPERPARAMETERS")
+    hyperparameters = log.hyperparameters()
     pprint(log.hyperparameters())
+except Exception:
+        print("Hyperparameters not available")
+    
+try:
     print("-------------")
     print("ACTION SPACE")
     pprint(log.action_space())
 except Exception:
-    print("Robomaker logs not available")
+        print("Action space not available")
 df = log.dataframe()
 
-simulation_agg = AnalysisUtils.simulation_agg(df)
+simulation_agg = AnalysisUtils.simulation_agg(df, secondgroup='unique_episode')
 # -
 
 # If the code above worked, you will see a list of details printed above: a bit about the agent and the network, a bit about the hyperparameters and some information about the action space. Now let's see what got loaded into the dataframe - the data structure holding your simulation information. the `head()` method prints out a few first lines of the data:
 
 df.head()
+
+df.describe()
+
+df['prev_progress'] = df['progress'].shift(1).fillna(0)
+df['progress_diff'] = df['progress'] - df['prev_progress']
+df[df['steps'] == 1]['prev_progress'] = 0
+
+df['progress_diff'].median()
+
+# +
+feature_interests = ['steps', 'reward', 'new_reward']
+
+def calc_discount_factor(r, fr):
+
+    discount_factor = hyperparameters['discount_factor']
+    
+    current_step = r['steps']
+    remaining_steps = fr[(fr['steps'] >= current_step)]
+
+    agg_discount_factors_sum = sum([ discount_factor ** i * r for i ,r  in enumerate(remaining_steps['reward'].values)])
+    return agg_discount_factors_sum
+    
+
+def get_discounted_reward_for_step(gr):
+    gr['discounted_reward'] = gr.apply(lambda r: calc_discount_factor(r[feature_interests], gr[feature_interests]),axis=1)
+    return gr
+
+
+# +
+# group = df.groupby('unique_episode')
+# group['discounted_reward'] = group.rolling(10)['reward'].sum()
+
+# +
+# discount_cal_df = df.set_index('unique_episode')
+# discount_cal_df = df.loc[0:20]
+
+
+# discount_cal_df.groupby('unique_episode').apply(lambda x: print(x['reward']))
+df = df.groupby('unique_episode').apply(get_discounted_reward_for_step, )
+# -
+
+[]
 
 # ## Load waypoints for the track you want to run analysis on
 #
@@ -154,6 +221,8 @@ df.head()
 # Tracks Available:
 
 # +
+from deepracer.tracks import TrackIO, Track
+from deepracer.tracks.track_utils import track_breakdown, track_meta
 tu = TrackIO()
 
 for track in tu.get_tracks():
@@ -169,7 +238,7 @@ for track in tu.get_tracks():
 try:
     track_name = log.agent_and_network()["world"]
 except Exception as e:
-    track_name = "reinvent_base"
+    track_name = "2022_reinvent_champ"
 
 
 track: Track = tu.load_track(track_name)
@@ -221,11 +290,10 @@ pu.plot_trackpoints(track)
 #
 # The higher the value, the more stable the model is on a given track.
 
-# +
-simulation_agg = au.simulation_agg(df)
-
+simulation_agg = au.simulation_agg(df, secondgroup="unique_episode")
+simulation_agg
 au.analyze_training_progress(simulation_agg, title='Training progress')
-# -
+
 # ### Stats for all laps
 #
 # Previous graphs were mainly focused on the state of training with regards to training progress. This however will not give you a lot of information about how well your reward function is doing overall.
@@ -268,7 +336,19 @@ else:
 #
 # A second side note: if you run this function for `complete_ones` instead of `simulation_agg`, suddenly the time histogram becomes more interesting as you can see whether completion times improve.
 
-au.scatter_by_groups(simulation_agg, title='Quintiles')
+# au.scatter_by_groups(simulation_agg, title='Quintiles')
+
+# ### Last iteration competion rate
+
+# +
+last_iteration = simulation_agg[simulation_agg['iteration'] >= simulation_agg['iteration'].max() - 100]
+
+amount_complete_laps = len(last_iteration[simulation_agg['progress']==100])
+total_laps = len(last_iteration)
+total_laps
+
+str(round(amount_complete_laps/total_laps * 100)) + '%'
+# -
 
 # ## Data in tables
 #
@@ -291,6 +371,11 @@ simulation_agg.nlargest(10, 'new_reward')
 # View five fastest complete laps
 complete_ones.nsmallest(5, 'time')
 
+# View the average lap time for completed laps
+complete_ones['time'].mean()
+
+complete_ones['time'].rolling(100).mean().plot()
+
 # View five best rewarded completed laps
 complete_ones.nlargest(5, 'reward')
 
@@ -309,7 +394,22 @@ simulation_agg.head()
 pd.set_option('display.max_rows', 500)
 
 # View all steps data for episode 10
-df[df['episode']==10]
+df[df['episode']==10].head()
+
+# +
+most_progressed_episode =simulation_agg[simulation_agg['progress']==simulation_agg['progress'].max()]
+
+fastest_episode =  int(most_progressed_episode['unique_episode'].iloc[0])
+fastest_iteration = int(most_progressed_episode['iteration'].iloc[0])
+fastest_iteration,fastest_episode
+# -
+
+if len(complete_ones) != 0:
+    fastest_episode = int(complete_ones.nsmallest(1, 'time').iloc[0]['unique_episode'])
+    fastest_iteration = int(complete_ones.nsmallest(1, 'time').iloc[0]['iteration'])
+
+# +
+# df[df['unique_episode'] == 5190][['steps','progress', 'prev_progress', 'progress_diff', 'reward', 'discounted_reward']]
 # -
 
 # ## Analyze the reward distribution for your reward function
@@ -322,7 +422,9 @@ df[df['episode']==10]
 # If you have a final step reward that makes the rest of this histogram
 # unreadable, you can filter the last step out by using
 # `episode[:-1].plot.bar` instead of `episode.plot.bar`
-episode = df[df['episode']==9]
+# episode = df[df['episode']==889]
+episode = df[df['unique_episode']==fastest_episode]
+
 
 if episode.empty:
     print("You probably don't have episode with this number, try a lower one.")
@@ -349,10 +451,28 @@ else:
 # episodes_to_plot = complete_ones.nlargest(3,'reward')
 
 # highest progress from all episodes:
-episodes_to_plot = simulation_agg.nlargest(3,'progress')
+# episodes_to_plot = simulation_agg.nlargest(3,'progress')
 
-pu.plot_selected_laps(episodes_to_plot, df, track)
+# fastest laps from all episodes:
+episodes_to_plot = complete_ones.nsmallest(3,'time')
+
+pu.plot_selected_laps(episodes_to_plot, df, track, section_to_plot="unique_episode")
+# +
+import pandas as pd
+
+start_index = 100000
+
+speed_mean_wp = df[start_index:].groupby('closest_waypoint')['speed'].mean()
+x_mean_wp = df[start_index:].groupby('closest_waypoint')['x'].mean()
+y_mean_wp = df[start_index:].groupby('closest_waypoint')['y'].mean()
+
+
+average_lap_df = pd.DataFrame({'speed': speed_mean_wp, 'x': x_mean_wp, 'y': y_mean_wp}).reset_index()
+average_lap_df['unique_episode'] = 1
+
+pu.plot_selected_laps(average_lap_df, average_lap_df, track, section_to_plot="unique_episode")
 # -
+
 # ### Plot a heatmap of rewards for current training. 
 # The brighter the colour, the higher the reward granted in given coordinates.
 # If instead of a similar view as in the example below you get a dark image with hardly any 
@@ -370,36 +490,45 @@ pu.plot_selected_laps(episodes_to_plot, df, track)
 # lead to improvement. If that is missing, the model will struggle to improve.
 
 
-# +
 #If you'd like some other colour criterion, you can add
 #a value_field parameter and specify a different column
-
 pu.plot_track(df, track)
-# -
+# pu.plot_track(df[:10000], track)
+# pu.plot_track(df[1000:], track)
+# pu.plot_track(df[df['unique_episode'] == complete_ones['unique_episode']], track)
+# pu.plot_track(df, track)
+# pu.plot_track(df[(df['x'] > 0) & (df['y'] > 0) & (df['y'] < df['y'].max()) & (df['y'] > df['y'].min())& (df['x'] < df['x'].max()) & (df['x'] > df['x'].min())] , track)
+# pu.plot_track(df[(df['y'] < df['y'].max()) & (df['y'] > df['y'].min())& (df['x'] < df['x'].max()) & (df['x'] > df['x'].min())] , track)
+
+# ### Plot including discount factor
+
+# pu.plot_track(df[df['discounted_reward'] <  df['discounted_reward'].max() * 0.9], track, 'discounted_reward')
+# pu.plot_track(df, track, 'discounted_reward')
+pu.plot_track(df.tail(int(len(df) * 0.9)), track, 'discounted_reward')
 
 # ### Plot a particular iteration
 # This is same as the heatmap above, but just for a single iteration.
 
-# +
 #If you'd like some other colour criterion, you can add
 #a value_field parameter and specify a different column
-iteration_id = 3
-
+# iteration_id = 304
+iteration_id=fastest_iteration
 pu.plot_track(df[df['iteration'] == iteration_id], track)
-# -
 
 # ### Path taken in a particular episode
 
 # +
-episode_id = 12
+# episode_id = fastest_episode
+# episode_id = 142 #856
+episode_id = 856
 
-pu.plot_selected_laps([episode_id], df, track)
+pu.plot_selected_laps(df[df['unique_episode']==episode_id], df, track,single_plot=False)
 # -
 
 # ### Path taken in a particular iteration
 
 # +
-iteration_id = 10
+iteration_id = int(fastest_iteration)
 
 pu.plot_selected_laps([iteration_id], df, track, section_to_plot = 'iteration')
 # -
@@ -420,9 +549,47 @@ track_breakdown.keys()
 #
 # **Note: does not work for continuous action space (yet).** 
 
-abu.action_breakdown(df, track, track_breakdown=track_breakdown.get('reinvent2018'), episode_ids=[12])
+abu.action_breakdown(df, track, track_breakdown=track_breakdown.get(track_name), episode_ids=[fastest_episode])
+
+# Look at the grid world
+
+# df[df['episode']== fastest_episode]
+episode = df[df['unique_episode']==fastest_episode]
+
+pu.plot_grid_world(episode, track)
+
+# # Fault Finding
+
+import matplotlib.pyplot as plt
+
+complete_laps = simulation_agg[simulation_agg['progress']==100]
+
+without_possible_off_tracks =  complete_laps[complete_laps['reward'] > 95]
+and_possible_going_crazy = without_possible_off_tracks[without_possible_off_tracks['reward'] < 105]
+
+# plt.title.set_text('Reward vs Time for completed laps')  # type: ignore
+# plt.set_xlabel('Time')
+# plt.set_ylabel('Reward')
+plt.scatter(and_possible_going_crazy['time'], and_possible_going_crazy['reward'], linewidth=2)
 
 
+negative_reward = simulation_agg[simulation_agg['progress']<0]
+
+this = complete_laps[complete_laps['reward'] > 105]
+
+df[df['unique_episode']==episode_id]
+
+
+# +
+faulty_mask = df[(df['unique_episode']==episode_id) & (df['reward'] > 1)]
+faulty_mask = df[df['reward'] > 1]
+
+faulty_mask
+
+# +
+
+pu.plot_selected_laps(faulty_mask, faulty_mask, track,single_plot=False)
+# -
 
 
 
